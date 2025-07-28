@@ -1,0 +1,174 @@
+`timescale 1 ns / 1 ps
+
+module converter_model #(
+    parameter integer C_AXI_DATA_WIDTH = 32,
+    parameter integer C_S_WIDTH        = 32,
+    parameter integer C_P_WIDTH        = 32,
+    parameter integer PHASE_ACCUM_WIDTH = 24
+)
+(
+    input  wire                          i_clk,
+    input  wire                          i_rst_n,
+    input  wire                          i_ena,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_ts_l,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_r,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_l,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_e,
+    input  wire [PHASE_ACCUM_WIDTH-1:0]  i_param_alpha,
+    input  wire [3:0]                    i_param_bridge_type,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_vm,
+    input  wire [C_AXI_DATA_WIDTH-1:0]   i_param_r_reciprocal,
+    output wire [C_AXI_DATA_WIDTH-1:0]   o_v_load_snapshot,
+    output wire [C_AXI_DATA_WIDTH-1:0]   o_i_load_snapshot
+);
+
+// --- Señales Internas ---
+    reg  signed [C_S_WIDTH-1:0]   v_rectified_ideal;
+    wire signed [C_S_WIDTH-1:0]   sine_normalized;
+    reg signed [C_S_WIDTH-1:0]   v_source;
+    reg  signed [C_S_WIDTH-1:0]   abs_v_source;
+    reg  signed [C_S_WIDTH-1:0]   v_load_out;
+    wire signed [C_S_WIDTH-1:0]   i_load_from_solver;
+    reg  signed [C_S_WIDTH-1:0]   i_load_feedback_reg;
+    reg                           conduction_active;
+    wire [PHASE_ACCUM_WIDTH-1:0]  phase_accumulator;
+    reg  [PHASE_ACCUM_WIDTH-1:0]  phase_reg;
+    wire                          is_firing_pulse;
+    reg                           is_firing_pulse_reg;
+    reg  [PHASE_ACCUM_WIDTH-1:0]  phase_reg_prev;
+    reg  [5:0]                     blanking_counter;
+    reg  [3:0]                     zero_current_counter;
+    
+    wire signed [C_S_WIDTH-1:0]   v_load_out_next;
+    reg  signed [C_S_WIDTH-1:0]   v_load_out_next_reg;
+
+    // --- Lógica para Carga Resistiva ---
+    wire is_r_load = (i_param_l == 0); 
+    reg signed [C_S_WIDTH-1:0] i_load_resistive; 
+    wire signed [C_S_WIDTH-1:0] i_load_final;    
+    wire solver_ena = conduction_active && !is_r_load; 
+
+    // --- Instanciaciones de Módulos ---
+    sine_generator #(
+        .C_DATA_WIDTH(C_S_WIDTH),
+        .PHASE_ACCUM_WIDTH(PHASE_ACCUM_WIDTH),
+        .PHASE_INCREMENT(1007)
+    ) sine_gen_inst (
+        .i_clk(i_clk), .i_rst_n(i_rst_n), .i_ena(i_ena),
+        .o_sine(sine_normalized), .o_phase_accumulator(phase_accumulator)
+    );
+
+    rle_solver_trapezoidal #(.C_I_WIDTH(C_S_WIDTH)) rle_solver_inst (
+        .i_clk(i_clk), .i_rst_n(i_rst_n), .i_ena(solver_ena), 
+        .i_v_load(v_load_out),
+        .i_v_load_next(v_load_out_next_reg),
+        .i_e_source(i_param_e),
+        .i_param_ts_l(i_param_ts_l), .i_param_r(i_param_r),
+        .o_i_load(i_load_from_solver) 
+    );
+
+    // --- Lógica Combinacional ---
+    wire signed [63:0] product_v_source;
+    assign product_v_source = $signed(sine_normalized) * $signed(i_param_vm);
+    // --- Lógica de cálculo resistivo AHORA SEGMENTADA (PIPELINED) ---
+    wire signed [63:0] product_i_load_r;
+    assign product_i_load_r = $signed(v_load_out) * $signed(i_param_r_reciprocal);
+    
+    always @(posedge i_clk) begin
+        if (!i_rst_n) begin
+            i_load_resistive <= 0;
+        end else if (i_ena) begin
+            // Se calcula y guarda el resultado, rompiendo la cadena combinacional.
+            i_load_resistive <= $signed(product_i_load_r) >>> 30;
+        end
+    end
+    
+    // --- Multiplexor para seleccionar la fuente de corriente ---
+    assign i_load_final = is_r_load? i_load_resistive : i_load_from_solver;
+
+    localparam [PHASE_ACCUM_WIDTH-1:0] P_PI = 1'b1 << (PHASE_ACCUM_WIDTH-1);
+    wire [PHASE_ACCUM_WIDTH-1:0] alpha_scaled = i_param_alpha;
+    wire [PHASE_ACCUM_WIDTH-1:0] p_pi_plus_alpha = P_PI + alpha_scaled;
+    wire fire_at_alpha         = (phase_reg_prev < alpha_scaled) && (phase_reg >= alpha_scaled);
+    wire fire_at_pi_plus_alpha = (phase_reg_prev < p_pi_plus_alpha) && (phase_reg >= p_pi_plus_alpha);
+    assign is_firing_pulse = fire_at_alpha || fire_at_pi_plus_alpha;
+
+    always @(*) begin
+        case (i_param_bridge_type)
+            4'd0: v_rectified_ideal = abs_v_source;
+            4'd1: begin
+                if (phase_reg >= alpha_scaled && phase_reg < p_pi_plus_alpha)
+                    v_rectified_ideal = v_source;
+                else
+                    v_rectified_ideal = -v_source;
+            end
+            4'd2: begin
+                if (phase_reg >= alpha_scaled && phase_reg < P_PI)
+                    v_rectified_ideal = v_source;
+                else if (phase_reg >= p_pi_plus_alpha)
+                    v_rectified_ideal = -v_source;
+                else
+                    v_rectified_ideal = 0;
+            end
+            default: v_rectified_ideal = abs_v_source;
+        endcase
+    end
+    
+    assign v_load_out_next = (conduction_active || is_firing_pulse) ? v_rectified_ideal : i_param_e;
+
+
+    always @(posedge i_clk) begin
+        if (!i_rst_n) begin
+            // --- Reseteo de registros ---
+            phase_reg             <= 0;
+            phase_reg_prev        <= 0;
+            i_load_feedback_reg   <= 0;
+            is_firing_pulse_reg   <= 0;
+            conduction_active     <= 1'b0;
+            blanking_counter      <= 0;
+            v_load_out            <= 0;
+            v_load_out_next_reg   <= 0;
+            abs_v_source          <= 0;
+            v_source              <= 0;
+
+        end else if (i_ena) begin
+            // --- Actualización de registros en cada ciclo ---
+            phase_reg           <= phase_accumulator;
+            phase_reg_prev      <= phase_reg;
+            i_load_feedback_reg <= i_load_final;
+            is_firing_pulse_reg <= is_firing_pulse;
+            
+            v_load_out          <= v_load_out_next;
+            v_load_out_next_reg <= v_load_out_next;
+
+            abs_v_source        <= (v_source < 0) ? -v_source : v_source;
+            v_source            <= $signed(product_v_source) >>> 15;
+
+            // --- MÁQUINA DE ESTADOS DE CONDUCCIÓN ---
+            case (i_param_bridge_type)
+                // Lógica para puentes controlados y semicontrolados
+                4'd1, 4'd2: begin
+                    if (is_firing_pulse) begin
+                        conduction_active <= 1'b1;
+                        blanking_counter  <= 15;
+                    end
+                    else if (blanking_counter > 0) begin
+                        blanking_counter <= blanking_counter - 1;
+                    end
+                    else if (i_load_final <= 0) begin
+                        conduction_active <= 1'b0;
+                    end
+                end
+                
+                // Lógica para puente NO controlado (puramente combinacional respecto a la física)
+                default: begin // Cubre 4'd0 y cualquier otro caso
+                    conduction_active <= (abs_v_source > i_param_e) || (i_load_final > 0);
+                end
+            endcase
+        end
+    end
+    // --- Lógica de Salida ---
+    assign o_v_load_snapshot = v_load_out;
+    assign o_i_load_snapshot = i_load_final;
+
+endmodule

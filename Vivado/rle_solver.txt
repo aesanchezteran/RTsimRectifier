@@ -1,0 +1,242 @@
+`timescale 1 ns / 1 ps
+
+module rle_solver_trapezoidal #(
+    parameter integer C_I_WIDTH      = 32,
+    parameter integer C_V_WIDTH      = 32,
+    parameter integer C_P_WIDTH      = 32
+)
+(
+    input  wire                          i_clk,
+    input  wire                          i_rst_n,
+    input  wire                          i_ena,
+    input  wire signed [C_V_WIDTH-1:0]   i_v_load,
+    input  wire signed [C_V_WIDTH-1:0]   i_v_load_next,
+    input  wire signed [C_V_WIDTH-1:0]   i_e_source,
+    input  wire signed [C_P_WIDTH-1:0]   i_param_ts_l,
+    input  wire signed [C_P_WIDTH-1:0]   i_param_r,
+    output wire signed [C_I_WIDTH-1:0]   o_i_load
+);
+
+    // --- Registros del Pipeline ---
+    reg signed [C_I_WIDTH-1:0] i_load_reg;
+
+    // Etapa 1
+    reg signed [C_I_WIDTH-1:0] p1_i_load;
+    reg signed [C_V_WIDTH-1:0] p1_v_load;
+    reg signed [C_V_WIDTH-1:0] p1_e_source;
+    reg signed [C_P_WIDTH-1:0] p1_param_ts_l;
+    reg signed [C_P_WIDTH-1:0] p1_param_r;
+
+    // Etapa 2
+    reg signed [63:0]         p2_i_times_r;
+    reg signed [63:0]          p2_v_minus_ir_minus_e;
+    reg signed [C_V_WIDTH-1:0] p2_v_load_next;
+    reg signed [C_V_WIDTH-1:0] p2_e_source_next;
+    reg signed [C_I_WIDTH-1:0] p2_i_load;
+
+    // Etapa 3
+    (* use_dsp = "yes" *) reg signed [95:0] p3_k1_mult; // Forzar uso de DSP
+    reg signed [63:0] p3_k1;
+    reg signed [C_V_WIDTH-1:0] p3_v_load_next;
+    reg signed [C_V_WIDTH-1:0] p3_e_source_next;
+    reg signed [C_I_WIDTH-1:0] p3_i_load;
+
+    // Etapa 4
+    reg signed [C_I_WIDTH-1:0] p4_i_predictor;
+    reg signed [C_I_WIDTH-1:0] predictor_temp;
+    reg signed [C_V_WIDTH-1:0] p4_v_load_next;
+    reg signed [C_V_WIDTH-1:0] p4_e_source_next;
+    reg signed [C_I_WIDTH-1:0] p4_i_load;
+    reg signed [63:0]          p4_k1;
+
+    // Etapa 5
+    (* use_dsp = "yes" *) reg signed [63:0] p5_i_pred_times_r; // Forzar uso de DSP
+    reg signed [63:0] p5_v_minus_ipredr_minus_e;
+    reg signed [C_I_WIDTH-1:0] p5_i_load;
+    reg signed [63:0]          p5_k1;
+
+    // Etapa 6
+    (* use_dsp = "yes" *) reg signed [95:0] p6_k2_mult; // Forzar uso de DSP
+    reg signed [63:0] p6_k2;
+    reg signed [C_I_WIDTH-1:0] p6_i_load;
+    reg signed [63:0]          p6_k1;
+
+    // Etapa 7
+    reg signed [63:0]          p7_k_avg;
+    reg signed [C_I_WIDTH-1:0] p7_i_load;
+
+    // Etapa 8
+    reg signed [C_I_WIDTH-1:0] p8_i_corrector;
+
+    // Etapa 9
+    reg signed [C_I_WIDTH-1:0] p9_i_next;
+
+    // --- Funciones de redondeo ---
+    function signed [63:0] round_convergent_by_30;
+        input signed [95:0] data;
+        reg [63:0] result;
+        reg is_tie;
+        begin
+            is_tie = (data[29:0] == 30'h20000000);
+            if (is_tie)
+                // Redondear al par más cercano
+                result = (data[95:30]) + (data[30]);
+            else
+                // Redondeo normal
+                result = (data[95:30]) + (data[29]);
+            round_convergent_by_30 = result;
+        end
+    endfunction
+
+    assign o_i_load = ($signed(i_load_reg) < 0) ? 0 : i_load_reg;
+    
+    always @(posedge i_clk) begin
+        if (!i_rst_n) begin
+            i_load_reg <= 0;
+        end else if (i_ena) begin
+            // Si el solver está activo, se actualiza la corriente con sujeción a cero
+            if ($signed(p9_i_next) < 0) begin
+                i_load_reg <= 0;
+            end else begin
+                i_load_reg <= p9_i_next;
+            end
+        end else begin
+            // Si el solver NO está activo (conduction_active=0),
+            // se resetea la corriente a cero.
+            i_load_reg <= 0;
+        end
+    end
+
+    // --- ETAPA 1: Captura de valores en t=n ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p1_i_load, p1_v_load, p1_e_source, p1_param_ts_l, p1_param_r} <= 0;
+        else if (i_ena) begin
+            p1_i_load     <= i_load_reg;
+            p1_v_load     <= i_v_load;
+            p1_e_source   <= i_e_source;
+            p1_param_ts_l <= i_param_ts_l;
+            p1_param_r    <= i_param_r;
+        end else begin
+            {p1_i_load, p1_v_load, p1_e_source, p1_param_ts_l, p1_param_r} <= 0;
+        end
+    end
+
+  // --- ETAPA 2: Cálculo para k1 y captura de valores en t=n+1 ---
+always @(posedge i_clk) begin
+    if (!i_rst_n) {p2_i_times_r, p2_v_minus_ir_minus_e, p2_v_load_next, p2_e_source_next, p2_i_load} <= 0;
+    else if (i_ena) begin
+        p2_i_times_r <= $signed(p1_i_load) * $signed(p1_param_r);
+
+        // La resta ahora usa el valor registrado de la multiplicación del ciclo anterior
+        p2_v_minus_ir_minus_e <= {{32{p1_v_load[C_V_WIDTH-1]}}, p1_v_load} - ($signed(p2_i_times_r) >>> 15) - {{32{p1_e_source[C_V_WIDTH-1]}}, p1_e_source};
+        p2_v_load_next        <= i_v_load_next; 
+        p2_e_source_next      <= i_e_source;
+        p2_i_load             <= p1_i_load;
+    end else begin
+        {p2_i_times_r, p2_v_minus_ir_minus_e, p2_v_load_next, p2_e_source_next, p2_i_load} <= 0;
+    end
+end
+    
+    
+    // --- ETAPA 3: Cálculo de k1 ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p3_k1_mult, p3_k1, p3_v_load_next, p3_e_source_next, p3_i_load} <= 0;
+        else if (i_ena) begin
+            p3_k1_mult       <= $signed(p2_v_minus_ir_minus_e) * $signed(p1_param_ts_l);
+            p3_k1            <= round_convergent_by_30(p3_k1_mult); 
+            p3_v_load_next   <= p2_v_load_next;
+            p3_e_source_next <= p2_e_source_next;
+            p3_i_load        <= p2_i_load;
+        end else begin
+            {p3_k1_mult, p3_k1, p3_v_load_next, p3_e_source_next, p3_i_load} <= 0;
+        end
+    end
+
+    // --- ETAPA 4: Cálculo del predictor (CON SUJECIÓN) ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p4_i_predictor, predictor_temp, p4_v_load_next, p4_e_source_next, p4_i_load, p4_k1} <= 0;
+        else if (i_ena) begin
+            predictor_temp   <= p3_i_load + $signed(p3_k1);
+            if ($signed(predictor_temp) < 0) begin
+                p4_i_predictor <= 0;
+            end else begin
+                p4_i_predictor <= predictor_temp;
+            end
+            p4_v_load_next   <= p3_v_load_next;
+            p4_e_source_next <= p3_e_source_next;
+            p4_i_load        <= p3_i_load;
+            p4_k1            <= p3_k1;
+        end else begin
+            {p4_i_predictor, predictor_temp, p4_v_load_next, p4_e_source_next, p4_i_load, p4_k1} <= 0;
+        end
+    end
+
+    // --- ETAPA 5: Cálculo para k2 usando valores de t=n+1 ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p5_i_pred_times_r, p5_v_minus_ipredr_minus_e, p5_i_load, p5_k1} <= 0;
+        else if (i_ena) begin
+            p5_i_pred_times_r         <= $signed(p4_i_predictor) * $signed(p1_param_r);
+            p5_v_minus_ipredr_minus_e <= {{32{p4_v_load_next[C_V_WIDTH-1]}}, p4_v_load_next} - ($signed(p5_i_pred_times_r) >>> 15) - {{32{p4_e_source_next[C_V_WIDTH-1]}}, p4_e_source_next};
+            p5_i_load                 <= p4_i_load;
+            p5_k1                     <= p4_k1;
+        end else begin
+            {p5_i_pred_times_r, p5_v_minus_ipredr_minus_e, p5_i_load, p5_k1} <= 0;
+        end
+    end
+
+    // --- ETAPA 6: Cálculo de k2 ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p6_k2_mult, p6_k2, p6_i_load, p6_k1} <= 0;
+        else if (i_ena) begin
+            p6_k2_mult <= $signed(p5_v_minus_ipredr_minus_e) * $signed(p1_param_ts_l);
+            p6_k2      <= round_convergent_by_30(p6_k2_mult);
+            p6_i_load  <= p5_i_load;
+            p6_k1      <= p5_k1;
+        end else begin
+            {p6_k2_mult, p6_k2, p6_i_load, p6_k1} <= 0;
+        end
+    end
+
+    // --- ETAPA 7: Promedio de k1 y k2 ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) {p7_k_avg, p7_i_load} <= 0;
+        else if (i_ena) begin
+            p7_k_avg  <= ($signed(p6_k1) + $signed(p6_k2) + 1) >>> 1;
+            p7_i_load <= p6_i_load;
+        end else begin
+            {p7_k_avg, p7_i_load} <= 0;
+        end
+    end
+    
+    // --- ETAPA 8: Cálculo del corrector (CON SATURACIÓN) ---
+    wire signed [63:0] corrector_full_res;
+    localparam signed [31:0] MAX_CURRENT = 32'h7FFFFFFF;
+    localparam signed [31:0] MIN_CURRENT = 32'h80000000;
+    assign corrector_full_res = $signed(p7_i_load) + $signed(p7_k_avg);
+
+    always @(posedge i_clk) begin
+        if (!i_rst_n) begin
+            p8_i_corrector <= 0;
+        end else if (i_ena) begin
+            if (corrector_full_res > MAX_CURRENT) begin
+                p8_i_corrector <= MAX_CURRENT;
+            end else if (corrector_full_res < MIN_CURRENT) begin
+                p8_i_corrector <= MIN_CURRENT;
+            end else begin
+                p8_i_corrector <= corrector_full_res[31:0];
+            end
+        end else begin
+            p8_i_corrector <= 0;
+        end
+    end
+
+    // --- ETAPA 9: Salida ---
+    always @(posedge i_clk) begin
+        if (!i_rst_n) p9_i_next <= 0;
+        else if (i_ena) p9_i_next <= p8_i_corrector;
+        else begin
+            p9_i_next <= 0;
+        end
+    end
+
+endmodule

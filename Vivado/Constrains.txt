@@ -1,0 +1,24 @@
+# =============================================================
+# Pmod JC - Salida de VOLTAJE
+# =============================================================
+# Pmod Pin 1 -> JC1 (CS_N)
+set_property -dict { PACKAGE_PIN V15   IOSTANDARD LVCMOS33 } [get_ports { o_v_cs_n }];
+# Pmod Pin 2 -> JC2 (DIN)
+set_property -dict { PACKAGE_PIN W15   IOSTANDARD LVCMOS33 } [get_ports { o_v_din }];
+# Pmod Pin 3 -> JC3 (LDAC_N)
+set_property -dict { PACKAGE_PIN T11   IOSTANDARD LVCMOS33 } [get_ports { o_v_ldac_n }];
+# Pmod Pin 4 -> JC4 (SCLK)
+set_property -dict { PACKAGE_PIN T10   IOSTANDARD LVCMOS33 } [get_ports { o_v_sclk }];
+
+
+# =============================================================
+# Pmod JB - Salida de CORRIENTE
+# =============================================================
+# Pmod Pin 1 -> JB1 (CS_N)
+set_property -dict { PACKAGE_PIN T20   IOSTANDARD LVCMOS33 } [get_ports { o_i_cs_n }];
+# Pmod Pin 2 -> JB2 (DIN)
+set_property -dict { PACKAGE_PIN U20   IOSTANDARD LVCMOS33 } [get_ports { o_i_din }];
+# Pmod Pin 3 -> JB3 (LDAC_N)
+set_property -dict { PACKAGE_PIN V20   IOSTANDARD LVCMOS33 } [get_ports { o_i_ldac_n }];
+# Pmod Pin 4 -> JB4 (SCLK)
+set_property -dict { PACKAGE_PIN W20   IOSTANDARD LVCMOS33 } [get_ports { o_i_sclk }];

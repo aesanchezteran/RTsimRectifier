@@ -1,0 +1,47 @@
+// output_scaler.v
+
+module output_scaler #(
+    parameter IN_BITS = 32,
+    parameter SHIFT_AMOUNT = 10
+)(
+    input  wire                  clk,
+    input  wire                  rst_n,
+    input  wire signed [IN_BITS-1:0] i_signal_in,    // Señal Q16.15 de entrada
+    input  wire signed [15:0]    i_offset,      
+    output reg  [15:0]           o_scaled_out    
+);
+
+    // === Etapa 1: Registro de entradas ===
+    reg signed [IN_BITS-1:0] signal_reg;
+    reg signed [15:0]        offset_reg; 
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            signal_reg <= 0;
+            offset_reg <= 0;
+        end else begin
+            signal_reg <= i_signal_in;
+            offset_reg <= i_offset;
+        end
+    end
+
+    // === Etapa 2: Escalado y offset ===
+    // El desplazamiento aritmético (>>>) conserva el signo del número
+    wire signed [16:0] scaled_val = signal_reg >>> SHIFT_AMOUNT;
+    wire signed [16:0] final_val  = scaled_val + 32768;
+
+    // === Etapa 3: Saturación de salida a rango [0, 65535] ===
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            o_scaled_out <= 0;
+        end else begin
+            if (final_val < 0)
+                o_scaled_out <= 16'h0000;
+            else if (final_val > 17'h1FFFF) // Rango máximo para 17 bits con signo (equivale a > 65535)
+                o_scaled_out <= 16'hFFFF;
+            else
+                o_scaled_out <= final_val[15:0];
+        end
+    end
+
+endmodule

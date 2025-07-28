@@ -1,0 +1,49 @@
+//sine generator
+
+module sine_generator #(
+    parameter integer C_DATA_WIDTH        = 32,
+    parameter integer LUT_ADDR_WIDTH      = 9,
+    parameter integer PHASE_ACCUM_WIDTH   = 24,
+    parameter integer PHASE_INCREMENT     = 1007,
+    parameter integer SINE_LUT_WIDTH      = 16
+)
+(
+    input  wire                          i_clk,
+    input  wire                          i_rst_n,
+    input  wire                          i_ena,
+    // La entrada i_alpha ya no se usa en este módulo, pero se mantiene
+    // por si se requiere para futuras funcionalidades.
+    input  wire       i_alpha,
+    output wire signed [C_DATA_WIDTH-1:0] o_sine,
+    output wire [PHASE_ACCUM_WIDTH-1:0]  o_phase_accumulator
+);
+
+    
+    reg signed [SINE_LUT_WIDTH-1:0] sine_lut [0:(2**LUT_ADDR_WIDTH)-1];
+    initial begin
+        $readmemh("sine_table_q1_15.mem", sine_lut);
+    end
+
+    reg [PHASE_ACCUM_WIDTH-1:0] phase_accumulator_reg;
+    assign o_phase_accumulator = phase_accumulator_reg;
+    
+    always @(posedge i_clk or negedge i_rst_n) begin
+        if (!i_rst_n)
+            phase_accumulator_reg <= 0;
+        else if (i_ena)
+            phase_accumulator_reg <= phase_accumulator_reg + PHASE_INCREMENT;
+    end
+
+    // --- Lógica de la Tabla de Consulta (LUT) ---
+    
+    // El acumulador de fase se usa para generar la dirección de la LUT
+    wire [LUT_ADDR_WIDTH-1:0] lut_address = o_phase_accumulator[PHASE_ACCUM_WIDTH-1 -: LUT_ADDR_WIDTH];
+    
+    // Se lee el valor de la LUT usando la dirección. Esto requiere que 'sine_lut' sea un arreglo.
+    wire signed [SINE_LUT_WIDTH-1:0] sine_value_from_lut = sine_lut[lut_address];
+    
+    // Se extiende el signo del valor de la LUT para que coincida con el ancho de la salida.
+    assign o_sine = {{16{sine_value_from_lut[15]}}, sine_value_from_lut};
+    
+
+endmodule

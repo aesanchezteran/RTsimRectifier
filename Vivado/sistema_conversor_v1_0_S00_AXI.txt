@@ -1,0 +1,305 @@
+// AXI del Sistema
+
+`timescale 1 ns / 1 ps
+
+module sistema_conversor_v1_0_S00_AXI #(
+    parameter integer C_S_AXI_DATA_WIDTH = 32,
+    parameter integer C_S_AXI_ADDR_WIDTH = 6,
+    parameter integer CLK_FREQ           = 1_000_000,
+    parameter integer PMOD_UPDATE_FREQ   = 200_000
+)
+(
+    // Puertos del Bus AXI
+    input  wire                               S_AXI_ACLK,
+    input  wire                               S_AXI_ARESETN,
+    input  wire [C_S_AXI_ADDR_WIDTH-1 : 0]    S_AXI_AWADDR,
+    input  wire                               S_AXI_AWVALID,
+    output wire                               S_AXI_AWREADY,
+    input  wire [C_S_AXI_DATA_WIDTH-1 : 0]    S_AXI_WDATA,
+    input  wire [(C_S_AXI_DATA_WIDTH/8)-1 : 0]S_AXI_WSTRB,
+    input  wire                               S_AXI_WVALID,
+    output wire                               S_AXI_WREADY,
+    output wire [1 : 0]                       S_AXI_BRESP,
+    output wire                               S_AXI_BVALID,
+    input  wire                               S_AXI_BREADY,
+    input  wire [C_S_AXI_ADDR_WIDTH-1 : 0]    S_AXI_ARADDR,
+    input  wire                               S_AXI_ARVALID,
+    output wire                               S_AXI_ARREADY,
+    output wire [C_S_AXI_DATA_WIDTH-1 : 0]    S_AXI_RDATA,
+    output wire [1 : 0]                       S_AXI_RRESP,
+    output wire                               S_AXI_RVALID,
+    input  wire                               S_AXI_RREADY,
+
+    // Puertos de Salida a PMODs
+    output wire o_v_sclk, output wire o_v_din, output wire o_v_cs_n, output wire o_v_ldac_n,
+    output wire o_i_sclk, output wire o_i_din, output wire o_i_cs_n, output wire o_i_ldac_n
+);
+
+    // -- Lógica de usuario y registros AXI --
+    reg [C_S_AXI_DATA_WIDTH-1:0] slv_reg0, slv_reg1, slv_reg2, slv_reg3, slv_reg4, slv_reg5, slv_reg6, slv_reg7;
+    wire [C_S_AXI_DATA_WIDTH-1:0] waveform_v_out;
+    wire [C_S_AXI_DATA_WIDTH-1:0] waveform_i_out;
+
+    // -- Lógica AXI con Máquina de Estados (FSM) --
+
+    // Estados para la FSM de escritura
+    localparam [1:0] W_IDLE = 2'b00, W_DATA = 2'b01, W_RESP = 2'b10;
+    reg [1:0] w_state_reg = W_IDLE, w_state_next;
+
+    // Registros para la dirección y la respuesta
+    reg [C_S_AXI_ADDR_WIDTH-1:0] axi_awaddr_reg;
+    reg [1:0] axi_bresp_reg;
+
+    // Asignaciones de salida combinacionales basadas en el estado
+    assign S_AXI_AWREADY = (w_state_reg == W_IDLE);
+    assign S_AXI_WREADY  = (w_state_reg == W_DATA);
+    assign S_AXI_BVALID  = (w_state_reg == W_RESP);
+    assign S_AXI_BRESP   = axi_bresp_reg;
+
+    // -- Lógica del Canal de Escritura --
+    
+    // Registro de estado de la FSM
+    always @(posedge S_AXI_ACLK) begin
+        if (S_AXI_ARESETN == 1'b0) begin
+            w_state_reg <= W_IDLE;
+        end else begin
+            w_state_reg <= w_state_next;
+        end
+    end
+
+    // Lógica combinacional para el siguiente estado
+    always @(*) begin
+        w_state_next = w_state_reg;
+        case (w_state_reg)
+            W_IDLE: begin
+                if (S_AXI_AWVALID) begin
+                    w_state_next = W_DATA;
+                end
+            end
+            W_DATA: begin
+                if (S_AXI_WVALID) begin
+                    w_state_next = W_RESP;
+                end
+            end
+            W_RESP: begin
+                if (S_AXI_BREADY) begin
+                    w_state_next = W_IDLE;
+                end
+            end
+
+        endcase
+    end
+
+    // Lógica para el almacenamiento de datos y registros
+    always @(posedge S_AXI_ACLK) begin
+        if (S_AXI_ARESETN == 1'b0) begin
+            slv_reg0 <= 0; slv_reg1 <= 0; slv_reg2 <= 0;
+            slv_reg3 <= 0; slv_reg4 <= 0; slv_reg5 <= 0; slv_reg6 <= 0;
+            axi_bresp_reg <= 0;
+        end else begin
+            // Captura la dirección cuando la FSM está en IDLE y llega una dirección válida
+            if (w_state_reg == W_IDLE && S_AXI_AWVALID) begin
+                axi_awaddr_reg <= S_AXI_AWADDR;
+            end
+
+            // Escribe en los registros cuando la FSM está en DATA y llegan datos válidos
+            if (w_state_reg == W_DATA && S_AXI_WVALID) begin
+                case (axi_awaddr_reg[5:2])
+                    4'h0: slv_reg0 <= S_AXI_WDATA;
+                    4'h1: slv_reg1 <= S_AXI_WDATA;
+                    4'h2: slv_reg2 <= S_AXI_WDATA;
+                    4'h3: slv_reg3 <= S_AXI_WDATA;
+                    4'h4: slv_reg4 <= S_AXI_WDATA;
+                    4'h5: slv_reg5 <= S_AXI_WDATA;
+                    4'h6: slv_reg6 <= S_AXI_WDATA;
+                    4'h7: slv_reg7 <= S_AXI_WDATA;
+                    default: ;
+                endcase
+            end
+        end
+    end
+
+    // -- Lógica del Canal de Lectura (Simplificada y funcional) --
+    reg axi_arv_arw;
+    reg [C_S_AXI_ADDR_WIDTH-1:0] axi_araddr_reg;
+    reg axi_rvalid_reg;
+
+    assign S_AXI_ARREADY = ~axi_arv_arw;
+    assign S_AXI_RVALID = axi_rvalid_reg;
+    assign S_AXI_RRESP = 2'b0;
+
+    // Lógica de lectura
+    always @(posedge S_AXI_ACLK) begin
+      if (!S_AXI_ARESETN) begin
+        axi_arv_arw <= 1'b0;
+        axi_rvalid_reg <= 1'b0;
+      end
+      else begin
+        if (S_AXI_ARVALID && ~axi_arv_arw) begin
+          axi_arv_arw <= 1'b1;
+          axi_araddr_reg <= S_AXI_ARADDR;
+        end
+        else if (S_AXI_RREADY && axi_rvalid_reg) begin
+          axi_arv_arw <= 1'b0;
+          axi_rvalid_reg <= 1'b0;
+        end
+        else if (axi_arv_arw) begin
+          axi_rvalid_reg <= 1'b1;
+        end
+      end
+    end
+
+    reg [C_S_AXI_DATA_WIDTH-1:0] slv_reg_rdata;
+
+    assign S_AXI_RDATA = axi_rvalid_reg ? slv_reg_rdata : 0;
+    
+    
+    // Multiplexor de lectura
+    always@(*) begin
+        case(axi_araddr_reg[5:2])
+            4'h0: slv_reg_rdata = slv_reg0;
+            4'h1: slv_reg_rdata = slv_reg1;
+            4'h2: slv_reg_rdata = slv_reg2;
+            4'h3: slv_reg_rdata = slv_reg3;
+            4'h4: slv_reg_rdata = slv_reg4;
+            4'h5: slv_reg_rdata = slv_reg5;
+            4'h6: slv_reg_rdata = slv_reg6;
+            4'h7: slv_reg_rdata = slv_reg7;
+            4'h8: slv_reg_rdata = waveform_v_out;
+            4'h9: slv_reg_rdata = waveform_i_out;
+            default: slv_reg_rdata = 0;
+        endcase
+    end
+    
+
+// -- Lógica de Usuario --
+
+reg [C_S_AXI_DATA_WIDTH-1:0] slv_reg0_p, slv_reg1_p, slv_reg2_p, slv_reg3_p;
+reg [C_S_AXI_DATA_WIDTH-1:0] slv_reg4_p, slv_reg5_p, slv_reg6_p, slv_reg7_p;
+
+// --- Lógica de Pipelining  ---
+// En cada ciclo de reloj, los registros pipeline capturan el estado de los registros AXI.
+always @(posedge S_AXI_ACLK) begin
+    if (S_AXI_ARESETN == 1'b0) begin
+        slv_reg0_p <= 32'd0;
+        slv_reg1_p <= 32'd0;
+        slv_reg2_p <= 32'd0;
+        slv_reg3_p <= 32'd0;
+        slv_reg4_p <= 32'd0;
+        slv_reg5_p <= 32'd0;
+        slv_reg6_p <= 32'd0;
+        slv_reg7_p <= 32'd0;
+    end else begin
+        slv_reg0_p <= slv_reg0;
+        slv_reg1_p <= slv_reg1;
+        slv_reg2_p <= slv_reg2;
+        slv_reg3_p <= slv_reg3;
+        slv_reg4_p <= slv_reg4;
+        slv_reg5_p <= slv_reg5;
+        slv_reg6_p <= slv_reg6;
+        slv_reg7_p <= slv_reg7;
+    end
+end
+
+// --- Señales de control derivadas de los registros PIPELINE ---
+wire sim_enable  = slv_reg0_p[0]; // Usar explícitamente el bit 0 para habilitar
+wire model_rst_n = S_AXI_ARESETN & ~slv_reg0_p[1]; // Usar el bit 1 para el reset del modelo
+
+// --- Instanciación del modelo usando los registros PIPELINE ---
+converter_model model_inst (
+.i_clk(S_AXI_ACLK), 
+.i_rst_n(model_rst_n), 
+.i_ena(sim_enable),
+.i_param_ts_l(slv_reg4_p), 
+.i_param_r(slv_reg2_p), 
+.i_param_l(slv_reg3_p),
+.i_param_e(slv_reg5_p), 
+.i_param_alpha(slv_reg1_p[27:4]), 
+.i_param_bridge_type(slv_reg1_p[3:0]),
+.i_param_vm(slv_reg6_p),
+.i_param_r_reciprocal(slv_reg7_p),
+.o_v_load_snapshot(waveform_v_out), 
+.o_i_load_snapshot(waveform_i_out)
+);
+
+
+    wire [15:0] v_load_scaled;
+    wire [15:0] i_load_scaled;
+
+    output_scaler #(
+        .IN_BITS(32),
+        .SHIFT_AMOUNT(7) 
+    ) v_scaler_inst (
+        .clk(S_AXI_ACLK), .rst_n(S_AXI_ARESETN),
+        .i_signal_in(waveform_v_out),       
+        .i_offset(16'h8000),                // Centra la señal en el rango del DAC
+        .o_scaled_out(v_load_scaled)
+    );
+
+
+    // Puedes reducir SHIFT_AMOUNT (ej. a 3) para dar más ganancia a la señal de corriente si es muy pequeña.
+    output_scaler #(
+        .IN_BITS(32),
+        .SHIFT_AMOUNT(4) 
+    ) i_scaler_inst (
+        .clk(S_AXI_ACLK), .rst_n(S_AXI_ARESETN),
+        .i_signal_in(waveform_i_out),       // <--- SEÑAL COMPLETA
+        .i_offset(16'h8000),                // Centra la señal
+        .o_scaled_out(i_load_scaled)
+    );
+
+    localparam PMOD_UPDATE_COUNTER = (CLK_FREQ / PMOD_UPDATE_FREQ);
+    reg [$clog2(PMOD_UPDATE_COUNTER)-1:0] pmod_trigger_cnt = 0;
+    reg pmod_start_pulse = 0;
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            pmod_trigger_cnt <= 0;
+            pmod_start_pulse <= 0;
+        end else if (sim_enable) begin
+            pmod_start_pulse <= 0;
+            if (pmod_trigger_cnt == PMOD_UPDATE_COUNTER - 1) begin
+                pmod_trigger_cnt <= 0;
+                pmod_start_pulse <= 1'b1;
+            end else begin
+                pmod_trigger_cnt <= pmod_trigger_cnt + 1;
+            end
+        end
+    end
+
+     // ==============================================================================
+    // === INSTANCIACIÓN DE LOS CONTROLADORES PMOD (BLOQUE CORREGIDO) ===
+    // ==============================================================================
+    
+    // Controlador para el Pmod de Voltaje
+    pmod_da3_controller #(
+        .CLK_FREQ(CLK_FREQ),        // Pasa el reloj del sistema (1 MHz)
+        .SPI_FREQ(200_000)          // Frecuencia SPI segura (200 kHz)
+    ) v_pmod_inst (
+        .clk(S_AXI_ACLK), 
+        .rst_n(S_AXI_ARESETN), 
+        .raw_data_in(v_load_scaled), 
+        .i_start(pmod_start_pulse), 
+        .o_ready(),                 // El puerto o_ready no se usa en este diseño, se deja abierto
+        .o_sclk(o_v_sclk), 
+        .o_din(o_v_din), 
+        .o_cs_n(o_v_cs_n), 
+        .o_ldac_n(o_v_ldac_n)
+    );
+
+    // Controlador para el Pmod de Corriente
+    pmod_da3_controller #(
+        .CLK_FREQ(CLK_FREQ),        // Pasa el reloj del sistema (1 MHz)
+        .SPI_FREQ(200_000)          // Frecuencia SPI segura (200 kHz)
+    ) i_pmod_inst (
+        .clk(S_AXI_ACLK), 
+        .rst_n(S_AXI_ARESETN), 
+        .raw_data_in(i_load_scaled), 
+        .i_start(pmod_start_pulse), 
+        .o_ready(),                 // El puerto o_ready no se usa en este diseño, se deja abierto
+        .o_sclk(o_i_sclk), 
+        .o_din(o_i_din), 
+        .o_cs_n(o_i_cs_n), 
+        .o_ldac_n(o_i_ldac_n)
+    );
+endmodule

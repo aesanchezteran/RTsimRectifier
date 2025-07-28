@@ -1,0 +1,205 @@
+clear all;
+close all;
+clc;
+
+%% Parámetros del circuito
+% Fuente
+Vm = 120;            % Amplitud de voltaje de entrada (V)
+f = 60;              % Frecuencia (Hz)
+omega = 2*pi*f;      % Frecuencia angular (rad/s)
+
+% --------------------------------------------------------------------------
+% SELECCIÓN DEL TIPO DE PUENTE Y CARGA
+% --------------------------------------------------------------------------
+% 1=No controlado, 2=Semicontrolado, 3=Totalmente controlado
+tipo_puente = 3;
+
+% 1=R, 2=RL, 3=RLE
+tipo_carga = 3;
+
+% Ángulo de disparo (grados)
+alpha_deg = 90;
+
+% Componentes
+R = 10;              % Resistencia de carga (Ohm)
+L = 0.15;            % Inductancia de carga (H) 
+E = 30;              % Fuerza contra-electromotriz (V)
+r_on = 0.1;          % Resistencia de conducción (Ohm)
+% --------------------------------------------------------------------------
+
+% --- Ajustes automáticos ---
+if tipo_carga == 1, L = 0; E = 0; end
+if tipo_carga == 2, E = 0; end
+if tipo_puente == 1, alpha = 0; alpha_deg = 0; else, alpha = alpha_deg*pi/180; end
+
+% Simulación
+T_final = 0.06;
+Ts = 1e-6;
+t = 0:Ts:T_final;
+
+%% Inicialización
+N = length(t);
+i_load = zeros(1, N);
+v_load = zeros(1, N);
+R_total = R + 2*r_on;
+L_eff = max(L, 1e-9);
+v_source = Vm * sin(omega * t);
+
+%% Simulación en el tiempo
+fprintf('Iniciando simulación...\n');
+for k = 1:N-1
+    omega_t_k = mod(omega * t(k), 2*pi);
+    
+
+    if tipo_carga == 1 % LÓGICA PARA CARGA PURAMENTE RESISTIVA (R)
+        v_load(k) = 0; % Por defecto, el voltaje es cero
+        
+        if tipo_puente == 1 % No controlado
+            v_load(k) = abs(v_source(k));
+        
+        elseif tipo_puente == 2 % Semicontrolado
+            % Con carga R, conduce de alpha a pi, y de pi+alpha a 2pi
+            if (omega_t_k >= alpha && omega_t_k < pi)
+                v_load(k) = v_source(k);
+            elseif (omega_t_k >= pi + alpha && omega_t_k < 2*pi)
+                v_load(k) = -v_source(k);
+            end
+        
+        elseif tipo_puente == 3 % Totalmente controlado
+            % Con carga R, conduce de alpha a pi, y de pi+alpha a 2pi.
+            % El tiristor se apaga en pi y 2pi porque la corriente se anula.
+            if (omega_t_k >= alpha && omega_t_k < pi)
+                v_load(k) = v_source(k);
+            elseif (omega_t_k >= pi + alpha && omega_t_k < 2*pi)
+                v_load(k) = -v_source(k);
+            end
+        end
+        
+        % La corriente se calcula directamente con la ley de Ohm
+        i_load(k) = v_load(k) / R_total;
+        if i_load(k) < 0, i_load(k) = 0; end % Para puentes que no permiten corriente negativa
+        if tipo_puente == 3, i_load(k) = v_load(k) / R_total; end % El controlado sí permite V y I negativos
+        
+        % Copiamos el valor al siguiente paso para mantener la simulación
+        i_load(k+1) = i_load(k);
+        v_load(k+1) = v_load(k);
+
+    else % LÓGICA PARA CARGA INDUCTIVA (RL o RLE)
+        
+        v_rect_ideal_k = 0;
+        if tipo_puente == 1
+            v_rect_ideal_k = abs(v_source(k));
+        elseif tipo_puente == 2
+            if (omega_t_k >= alpha && omega_t_k < pi), v_rect_ideal_k = v_source(k);
+            elseif (omega_t_k >= pi + alpha && omega_t_k < 2*pi), v_rect_ideal_k = -v_source(k);
+            else, v_rect_ideal_k = 0; end
+        elseif tipo_puente == 3
+            if (omega_t_k >= alpha && omega_t_k < (pi + alpha)), v_rect_ideal_k = v_source(k); else, v_rect_ideal_k = -v_source(k); end
+        end
+
+        if tipo_puente == 1
+            if v_rect_ideal_k > E || i_load(k) > 0, v_load(k) = v_rect_ideal_k; else, v_load(k) = E; end
+        else
+            % Se separan los eventos de disparo para hacer la lógica más robusta.
+        is_firing_pulse_1 = (abs(omega_t_k - alpha) < omega*Ts);      % Pulso para el primer par de tiristores
+        is_firing_pulse_2 = (abs(omega_t_k - (pi + alpha)) < omega*Ts); % Pulso para el segundo par
+
+            % Lógica de decisión para v_load(k) mejorada
+            if is_firing_pulse_1
+                % En el instante del primer disparo, forzamos la conexión a la fuente positiva.
+                v_load(k) = v_source(k);
+            elseif is_firing_pulse_2
+                % En el instante del segundo disparo, forzamos la conexión a la fuente negativa.
+                v_load(k) = -v_source(k);
+            elseif i_load(k) > 0
+                % Si ya hay corriente (conducción continua), el voltaje lo determina el par de tiristores que ya estaba activo.
+                v_load(k) = v_rect_ideal_k;
+            else
+                % Si no hay corriente ni pulso de disparo, la tensión en la carga es la de la fuerza contra-electromotriz (E).
+                v_load(k) = E;
+            end
+        end
+
+        di_dt1 = (v_load(k) - R_total * i_load(k) - E) / L_eff;
+        i_load_pred = i_load(k) + di_dt1 * Ts;
+        if i_load_pred < 0, i_load_pred = 0; end
+
+        omega_t_k1 = mod(omega * t(k+1), 2*pi);
+        v_rect_ideal_k1 = 0;
+        if tipo_puente == 1, v_rect_ideal_k1 = abs(v_source(k+1));
+        elseif tipo_puente == 2
+            if (omega_t_k1 >= alpha && omega_t_k1 < pi), v_rect_ideal_k1 = v_source(k+1);
+            elseif (omega_t_k1 >= pi + alpha && omega_t_k1 < 2*pi), v_rect_ideal_k1 = -v_source(k+1);
+            else, v_rect_ideal_k1 = 0; end
+        elseif tipo_puente == 3, if (omega_t_k1 >= alpha && omega_t_k1 < (pi + alpha)), v_rect_ideal_k1 = v_source(k+1); else, v_rect_ideal_k1 = -v_source(k+1); end
+        end
+
+        if tipo_puente == 1
+            if v_rect_ideal_k1 > E || i_load_pred > 0, v_load_pred = v_rect_ideal_k1; else, v_load_pred = E; end
+        else
+            is_firing_time_k1 = (abs(omega_t_k1 - alpha) < omega*Ts || abs(omega_t_k1 - (pi+alpha)) < omega*Ts);
+            if i_load_pred > 0 || is_firing_time_k1, v_load_pred = v_rect_ideal_k1; else, v_load_pred = E; end
+        end
+
+        di_dt2 = (v_load_pred - R_total * i_load_pred - E) / L_eff;
+        i_load(k+1) = i_load(k) + (di_dt1 + di_dt2) * Ts / 2;
+        if i_load(k+1) < 0, i_load(k+1) = 0; end
+    end
+end
+v_load(N) = v_load(N-1);
+i_load(N) = i_load(N-1);
+fprintf('Simulación completada.\n');
+
+%% Post-Procesamiento (Cálculos y Gráficas)
+p_load = v_load .* i_load;
+analysis_start_idx = 1;
+analysis_end_idx = N;
+v_load_analysis = v_load(analysis_start_idx:analysis_end_idx);
+i_load_analysis = i_load(analysis_start_idx:analysis_end_idx);
+v_avg = mean(v_load_analysis);
+i_avg = mean(i_load_analysis);
+p_avg = mean(p_load(analysis_start_idx:analysis_end_idx));
+v_rms = sqrt(mean(v_load_analysis.^2));
+i_rms = sqrt(mean(i_load_analysis.^2));
+if tipo_puente == 1, nombre_puente = 'No Controlado';
+elseif tipo_puente == 2, nombre_puente = 'Semicontrolado';
+else, nombre_puente = 'Totalmente Controlado'; end
+
+% --- Figura Original ---
+figure('Name', 'Formas de Onda del Circuito', 'NumberTitle', 'off', 'WindowState', 'maximized');
+sgtitle(sprintf('Resultados para Puente %s con α = %d°', nombre_puente, alpha_deg), 'FontSize', 14, 'FontWeight', 'bold');
+ax1 = subplot(3, 1, 1);
+plot(ax1, t, v_source, 'r--', 'LineWidth', 1, 'DisplayName', 'V_{in}');
+hold(ax1, 'on');
+plot(ax1, t, v_load, 'b-', 'LineWidth', 2, 'DisplayName', 'V_{load}');
+hold(ax1, 'off');
+title(ax1, 'Voltajes'); ylabel(ax1, 'Voltaje (V)'); grid(ax1, 'on'); legend(ax1, 'show');
+ax2 = subplot(3, 1, 2);
+plot(ax2, t, i_load, 'm-', 'LineWidth', 2);
+title(ax2, 'Corriente de Carga'); ylabel(ax2, 'Corriente (A)'); grid(ax2, 'on');
+ax3 = subplot(3, 1, 3);
+plot(ax3, t, p_load, 'g-', 'LineWidth', 2);
+title(ax3, 'Potencia Instantánea en la Carga'); ylabel(ax3, 'Potencia (W)'); xlabel(ax3, 'Tiempo (s)'); grid(ax3, 'on');
+linkaxes([ax1, ax2, ax3], 'x'); xlim([0 T_final]);
+
+
+% --- Figura para ver solo el Voltaje Rectificado ---
+figure('Name', 'Voltaje Rectificado en la Carga', 'NumberTitle', 'off');
+plot(t, v_load, 'b-', 'LineWidth', 2);
+title(sprintf('Voltaje Rectificado (Puente %s, α = %d°)', nombre_puente, alpha_deg), 'FontSize', 12);
+xlabel('Tiempo (s)');
+ylabel('Voltaje (V)');
+grid on;
+xlim([0 T_final]);
+
+%% Resultados en Consola
+fprintf('\n--- ANÁLISIS DE RESULTADOS ---\n');
+fprintf('Parámetros: Carga tipo %d, Puente tipo %d\n', tipo_carga, tipo_puente);
+fprintf('R=%.1f Ω, L=%.3f H, E=%.1f V, α=%.1f°\n', R, L, E, alpha_deg);
+fprintf('\n--- Valores Promedio (DC) ---\n');
+fprintf('Voltaje promedio: %.2f V\n', v_avg);
+fprintf('Corriente promedio: %.3f A\n', i_avg);
+fprintf('Potencia promedio: %.2f W\n', p_avg);
+fprintf('\n--- Valores Eficaces (RMS) ---\n');
+fprintf('Voltaje RMS: %.2f V\n', v_rms);
+fprintf('Corriente RMS: %.3f A\n', i_rms);

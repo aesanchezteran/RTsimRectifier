@@ -1,0 +1,119 @@
+// pmod_da3_controller.v
+
+
+module pmod_da3_controller #(
+    parameter CLK_FREQ = 1_000_000,
+    parameter SPI_FREQ = 100_000
+)(
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [15:0] raw_data_in,
+    input  wire        i_start,
+    output reg         o_ready,
+
+    output reg         o_sclk,
+    output             o_din,
+    output reg         o_cs_n,
+    output reg         o_ldac_n
+);
+
+    // Divisor de Frecuencia
+    localparam SCLK_DIV_MAX = (CLK_FREQ / (SPI_FREQ * 2)) > 0 ? (CLK_FREQ / (SPI_FREQ * 2)) - 1 : 0;
+    reg [$clog2(SCLK_DIV_MAX+1)-1:0] sclk_div_count = 0;
+    wire sclk_tick;
+
+    assign sclk_tick = (sclk_div_count == SCLK_DIV_MAX);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) sclk_div_count <= 0;
+        else if (sclk_tick) sclk_div_count <= 0;
+        else sclk_div_count <= sclk_div_count + 1;
+    end
+    
+    // FSM SPI
+    localparam S_IDLE              = 4'b0000;
+    localparam S_LOAD_DATA         = 4'b0001;
+    localparam S_START_TRANSFER    = 4'b0010;
+    localparam S_SHIFT_DATA        = 4'b0011;
+    localparam S_END_TRANSFER      = 4'b0100;
+    localparam S_PULSE_LDAC_LOW    = 4'b0101;
+    localparam S_PULSE_LDAC_HIGH   = 4'b0110;
+
+    reg [3:0]  state = S_IDLE;
+    reg [4:0]  bit_count = 0;
+    reg [15:0] data_shift_reg = 0;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state <= S_IDLE;
+            bit_count <= 0;
+            o_ready <= 1;
+            o_cs_n <= 1;
+            o_ldac_n <= 1;
+            o_sclk <= 0;
+            data_shift_reg <= 0;
+        end else begin
+            
+            if (state == S_IDLE) begin
+                o_ready <= 1;
+                o_ldac_n <= 1;
+                if (i_start) begin
+                    state <= S_LOAD_DATA;
+                    o_ready <= 0;
+                end
+            end
+
+            if (sclk_tick) begin
+                case (state)
+                    S_LOAD_DATA: begin
+                        data_shift_reg <= raw_data_in;
+                        bit_count <= 16;
+                        state <= S_START_TRANSFER;
+                    end
+
+                    S_START_TRANSFER: begin
+                        o_cs_n <= 0;
+                        o_sclk <= 0;
+                        state <= S_SHIFT_DATA;
+                    end
+
+                    
+                    S_SHIFT_DATA: begin
+                        o_sclk <= ~o_sclk;
+                        
+                        if (o_sclk == 1'b1) begin 
+                            data_shift_reg <= {data_shift_reg[14:0], 1'b0};
+                            bit_count <= bit_count - 1;                     
+                            
+                            if (bit_count == 1) begin
+                                state <= S_END_TRANSFER;
+                            end
+                        end
+                    end
+
+                    S_END_TRANSFER: begin
+                        o_cs_n <= 1;
+                        o_sclk <= 0;
+                        state <= S_PULSE_LDAC_LOW;
+                    end
+                    
+                    S_PULSE_LDAC_LOW: begin
+                        o_ldac_n <= 0;
+                        state <= S_PULSE_LDAC_HIGH;
+                    end
+
+                    S_PULSE_LDAC_HIGH: begin
+                        state <= S_IDLE;
+                    end
+                    
+                    default: begin
+                        
+                    end
+                endcase
+            end
+        end
+    end
+    
+    assign o_din = data_shift_reg[15];
+
+endmodule

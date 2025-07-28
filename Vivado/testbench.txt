@@ -1,0 +1,116 @@
+//testbench_sistema_conversor
+
+`timescale 1ns / 1ps
+
+module tb_sistema_conversor;
+    // --- Constantes del sistema ---
+    localparam real    PI              = 3.14159265359;
+    localparam real    F_CLK           = 1_000_000.0;
+    localparam real    TS              = 1.0 / F_CLK;
+    localparam         CLK_PERIOD      = 1000;
+    
+    // --- PARÁMETROS DE SIMULACIÓN ---
+    localparam real    VM_VOLTS        = 325.0;      // Voltaje de Pico (puedes cambiarlo a 110.0)
+    localparam real    R_OHMS          = 100.0;
+    localparam real    L_HENRYS        = 0.0;
+    localparam real    E_VOLTS         = 0.0;
+    localparam [3:0] BRIDGE_TYPE_VAL = 1;        // 0:No controlado, 1:Controlado, 2:Semicontrolado
+    localparam real ALPHA_DEGREES   = 90 * (0.01745329252);
+    
+    
+    localparam [31:0] R_RECIP_Q1_30 = (1.0 / R_OHMS) * (2.0**30);
+
+    // --- CÁLCULOS AUTOMÁTICOS A PUNTO FIJO ---
+    localparam [31:0] VM_Q16_15     = VM_VOLTS * (2.0**15);
+    localparam [31:0] R_Q16_15      = R_OHMS * (2.0**15);
+    localparam [31:0] L_Q16_15      = L_HENRYS * (2.0**15);
+    localparam [31:0] E_Q16_15      = E_VOLTS * (2.0**15);
+    localparam [23:0] ALPHA_SCALED_FINAL = (ALPHA_DEGREES / (2.0*PI)) * (2.0**24);
+    localparam [31:0] TS_L_Q1_30    = (L_HENRYS == 0.0) ? 0 : (TS / L_HENRYS) * 10.0 * (2.0**30);
+
+    // --- Señales y Módulo Bajo Prueba ---
+    reg  s00_axi_aclk = 0;
+    reg  s00_axi_aresetn = 0;
+    reg  [5:0] s00_axi_awaddr;
+    reg        s00_axi_awvalid;
+    wire       s00_axi_awready;
+    reg [31:0] s00_axi_wdata;
+    reg [3:0]  s00_axi_wstrb;
+    reg        s00_axi_wvalid;
+    wire       s00_axi_wready;
+    wire [1:0] s00_axi_bresp;
+    wire       s00_axi_bvalid;
+    reg        s00_axi_bready;
+    reg  [5:0] s00_axi_araddr;
+    reg        s00_axi_arvalid;
+    wire       s00_axi_arready;
+    wire[31:0] s00_axi_rdata;
+    wire[1:0]  s00_axi_rresp;
+    wire       s00_axi_rvalid;
+    reg        s00_axi_rready;
+    wire o_v_sclk, o_v_din, o_v_cs_n, o_v_ldac_n;
+    wire o_i_sclk, o_i_din, o_i_cs_n, o_i_ldac_n;
+
+    sistema_conversor_v1_0 #(.C_S00_AXI_ADDR_WIDTH(6)) uut (
+        .s00_axi_aclk(s00_axi_aclk), .s00_axi_aresetn(s00_axi_aresetn),
+        .s00_axi_awaddr(s00_axi_awaddr), .s00_axi_awvalid(s00_axi_awvalid), .s00_axi_awready(s00_axi_awready),
+        .s00_axi_wdata(s00_axi_wdata), .s00_axi_wstrb(s00_axi_wstrb), .s00_axi_wvalid(s00_axi_wvalid), .s00_axi_wready(s00_axi_wready),
+        .s00_axi_bresp(s00_axi_bresp), .s00_axi_bvalid(s00_axi_bvalid), .s00_axi_bready(s00_axi_bready),
+        .s00_axi_araddr(s00_axi_araddr), .s00_axi_arvalid(s00_axi_arvalid), .s00_axi_arready(s00_axi_arready),
+        .s00_axi_rdata(s00_axi_rdata), .s00_axi_rresp(s00_axi_rresp), .s00_axi_rvalid(s00_axi_rvalid), .s00_axi_rready(s00_axi_rready),
+        .o_v_sclk(o_v_sclk), .o_v_din(o_v_din), .o_v_cs_n(o_v_cs_n), .o_v_ldac_n(o_v_ldac_n),
+        .o_i_sclk(o_i_sclk), .o_i_din(o_i_din), .o_i_cs_n(o_i_cs_n), .o_i_ldac_n(o_i_ldac_n)
+    );
+
+    always #(CLK_PERIOD/2) s00_axi_aclk = ~s00_axi_aclk;
+
+    task axi_write(input [5:0] addr, input [31:0] data);
+begin
+    // --- Fase 1: Handshake de Dirección ---
+    @(posedge s00_axi_aclk);
+    s00_axi_awaddr  <= addr;
+    s00_axi_awvalid <= 1;
+    wait (s00_axi_awready); // Espera a que el esclavo acepte la dirección
+    @(posedge s00_axi_aclk);
+    s00_axi_awvalid <= 0;
+
+    // --- Fase 2: Handshake de Datos ---
+    s00_axi_wdata   <= data;
+    s00_axi_wstrb   <= 4'hF;
+    s00_axi_wvalid  <= 1;
+    wait (s00_axi_wready); // Espera a que el esclavo acepte los datos
+    @(posedge s00_axi_aclk);
+    s00_axi_wvalid  <= 0;
+
+    // --- Fase 3: Handshake de Respuesta ---
+    s00_axi_bready  <= 1;
+    wait (s00_axi_bvalid); // Espera la confirmación de escritura del esclavo
+    @(posedge s00_axi_aclk);
+    s00_axi_bready  <= 0;
+
+    $display("TB INFO @ %0t: AXI Write -> Addr=0x%h, Data=0x%h", $time, addr, data);
+end
+endtask
+
+    initial begin
+        s00_axi_aresetn <= 0;
+        s00_axi_awvalid <= 0; s00_axi_wvalid  <= 0; s00_axi_bready  <= 0;
+        s00_axi_arvalid <= 0; s00_axi_rready  <= 0; s00_axi_awaddr  <= 0;
+        s00_axi_wdata   <= 0; s00_axi_wstrb   <= 0;
+        repeat(10) @(posedge s00_axi_aclk);
+        s00_axi_aresetn <= 1;
+        @(posedge s00_axi_aclk);
+
+        axi_write(6'h04, {4'b0, ALPHA_SCALED_FINAL, BRIDGE_TYPE_VAL});
+        axi_write(6'h08, R_Q16_15);
+        axi_write(6'h0C, L_Q16_15);
+        axi_write(6'h10, TS_L_Q1_30);
+        axi_write(6'h14, E_Q16_15);
+        axi_write(6'h18, VM_Q16_15);
+        axi_write(6'h1C, R_RECIP_Q1_30); 
+        
+        axi_write(6'h00, 32'h00000001);
+        #1_000_000_000;
+        $finish;
+    end
+endmodule
