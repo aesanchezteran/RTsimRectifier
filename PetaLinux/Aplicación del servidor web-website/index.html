@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TIC EDGAR HARO 2025</title>
+  <script src="smoothie.js"></script>
+  <style>
+    body {
+      background-color: #e6f7ff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      text-align: center;
+      padding: 20px;
+    }
+
+    h1 {
+      color: #004466;
+    }
+
+    .chart-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 40px;
+    }
+
+    .chart-container {
+      display: flex;
+      align-items: center;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 12px;
+      padding: 10px;
+      max-width: 820px;
+    }
+
+    .y-axis-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      margin-right: 10px;
+      font-weight: bold;
+      color: #333;
+    }
+
+    .x-axis-label {
+      margin-top: 5px;
+      font-weight: bold;
+      color: #333;
+    }
+
+    canvas {
+      background-color: #fff;
+    }
+
+    .input-form {
+      margin: 30px auto;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 800px;
+      text-align: left;
+    }
+
+    .input-form label {
+      display: inline-block;
+      width: 200px;
+      font-weight: bold;
+      color: #333;
+    }
+
+    .input-form input {
+      width: 120px;
+      margin: 5px 10px 5px 0;
+    }
+
+    .input-form button {
+      margin-top: 10px;
+      padding: 8px 16px;
+      font-weight: bold;
+      background-color: #004466;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .switch-btn {
+      padding: 6px 12px;
+      background-color: #999 !important;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .switch-on {
+      background-color: #28a745 !important;
+    }
+
+    .switch-off {
+      background-color: #dc3545 !important;
+    }
+  </style>
+</head>
+<body>
+  <h1>TRABAJO DE INTEGRACIÓN CURRICULAR</h1>
+  <p>Escuela Politécnica Nacional</p>
+  <img src="EPN.png" alt="Missing Image!" />
+  <h2>INTERFAZ PARA SIMULADOR DE CONVERTIDORES MONOFÁSICOS AC/DC</h2>
+  <p>Por Edgar Haro</p>
+
+    <!--INGRESO DE ENTRADAS-->
+  <div class="input-form" style="display: flex; justify-content: space-between; align-items: flex-start;">
+    <div>
+        <form id="inputForm">
+        <label for="ctrl">Simulación:</label>
+        <button type="button" id="ctrlButton" class="switch-btn switch-off">OFF</button><br/>
+
+        <label for="CONF">Convertidor:</label>
+        <select id="CONF">
+          <option value="0">No controlado</option>
+          <option value="1">Controlado</option>
+          <option value="2">Semi-Controlado</option>
+        </select><br/>
+
+        <label for="alpha">Alpha (°):</label>
+        <input type="number" id="alpha" step="0.01" min="0" max="180" value="0" /><br/>
+
+        <label for="R">Carga Resistiva (Ω):</label>
+        <input type="number" id="R" step="0.001" value="0" /><br/>
+
+        <label for="L">Carga Inductiva (H):</label>
+        <input type="number" id="L" step="0.0001" value="0" /><br/>
+
+        <label for="E">Fuente de voltaje en la carga (V):</label>
+        <input type="number" id="E" step="0.001" value="0" /><br/>
+
+        <label for="VM">Voltaje pico de la fuente (V):</label>
+        <input type="number" id="VM" step="0.001" value="0" /><br/>
+
+        <button type="submit">Enviar los valores</button>
+      </form>
+      <div id="inputStatus"></div>
+    </div>
+      <!--IMAGEN DEL CONVERTIDOR-->
+    <div class="image-preview" style="margin-left: 20px;">
+      <img id="confImage" src="conf_0.png" alt="Imagen del convertidor" width="400" />
+      <h3 style="margin-left: 100px;">Convertidor Simulado</h3>
+    </div>
+  </div>
+
+  <!--PLOT DE VOLTAJE-->
+  <div class="chart-wrapper">
+    <div class="chart-container">
+      <div class="y-axis-label">Voltaje de salida (V)</div>
+      <canvas id="chartV" width="800" height="200"></canvas>
+    </div>
+    <div class="x-axis-label">Tiempo (s)</div>
+    <div id="vStats" style="margin-top: 5px; font-weight: bold; color: #004466;"></div>
+  </div>
+
+  <!--PLOT DE CORRIENTE-->
+  <div class="chart-wrapper">
+    <div class="chart-container">
+      <div class="y-axis-label">Corriente de salida (A)</div>
+      <canvas id="chartI" width="800" height="200"></canvas>
+    </div>
+    <div class="x-axis-label">Tiempo (s)</div>
+    <div id="iStats" style="margin-top: 5px; font-weight: bold; color: #004466;"></div>
+  </div>
+
+  <script>
+    // PLOT DE OUPUTS CON SMOOTHIE
+    function createChart(canvasId, color) {
+      const chart = new SmoothieChart({
+        millisPerPixel:5,
+        grid: {
+          strokeStyle: '#ccc',
+          fillStyle: '#ffffff',
+          lineWidth: 1,
+          millisPerLine: 1000,
+          verticalSections: 4
+        },
+        labels: { fillStyle: '#000', fontSize: 12 },
+        maxValueScale: 1.2,
+        minValueScale: 1.2
+      });
+
+      const series = new TimeSeries();
+      chart.addTimeSeries(series, { strokeStyle: color, lineWidth: 2 });
+      chart.streamTo(document.getElementById(canvasId), 0);
+      return series;
+    }
+
+    const seriesV = createChart('chartV', 'rgba(0, 0, 255, 1)');
+    const seriesI = createChart('chartI', 'rgba(0, 255, 0, 1)');
+    let vMax = -Infinity, vMin = Infinity;
+    let iMax = -Infinity, iMin = Infinity;
+    const vStatsDiv = document.getElementById('vStats');
+    const iStatsDiv = document.getElementById('iStats');
+
+
+    const socket = new WebSocket(`ws://${location.hostname}:8765`);
+
+    socket.onmessage = function(event) {
+      const now = Date.now();
+      const [V, I] = event.data.trim().split(/\s+/).map(Number);
+       if (!isNaN(V)) {
+       seriesV.append(now, V);
+       if (V > vMax) vMax = V;
+       if (V < vMin) vMin = V;
+       vStatsDiv.textContent = `Máx V: ${vMax.toFixed(2)} V | Mín V: ${vMin.toFixed(2)} V`;
+       }
+
+       if (!isNaN(I)) {
+       seriesI.append(now, I);
+       if (I > iMax) iMax = I;
+       if (I < iMin) iMin = I;
+       iStatsDiv.textContent = `Máx I: ${iMax.toFixed(2)} A | Mín I: ${iMin.toFixed(2)} A`;
+       }
+    };
+
+
+    // ACTIVACIÓN DEL SISTEMA
+    let ctrlState = 0;
+    const ctrlBtn = document.getElementById('ctrlButton');
+    ctrlBtn.addEventListener('click', () => {
+      ctrlState = 1 - ctrlState;
+      ctrlBtn.textContent = ctrlState ? "ON" : "OFF";
+      ctrlBtn.classList.toggle("switch-on", ctrlState === 1);
+      ctrlBtn.classList.toggle("switch-off", ctrlState === 0);
+    });
+    // IMÁGENES DE CONVERTIDORES
+    document.getElementById('CONF').addEventListener('change', () => {
+      const confValue = document.getElementById('CONF').value;
+      const image = document.getElementById('confImage');
+      image.src = `conf_${confValue}.png`;
+    });
+
+    //LLENADO DE INPUTS
+    document.getElementById('inputForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      vMax = -Infinity;
+      vMin = Infinity;
+      iMax = -Infinity;
+      iMin = Infinity;
+      vStatsDiv.textContent = '';
+      iStatsDiv.textContent = '';
+      
+      const params = new URLSearchParams({
+        ctrl: ctrlState,
+        alpha: document.getElementById('alpha').value,
+        CONF: document.getElementById('CONF').value,
+        R: document.getElementById('R').value,
+        L: document.getElementById('L').value,
+        E: document.getElementById('E').value,
+        VM: document.getElementById('VM').value
+      });
+
+      fetch(`/cgi-bin/inputs.sh?${params}`)
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+          return res.text();
+        })
+        .then(response => {
+          document.getElementById('inputStatus').textContent = response;
+        })
+        .catch(err => {
+          document.getElementById('inputStatus').textContent = "Error enviando datos.";
+          console.error('Fetch error:', err);
+        });
+    });
+  </script>
+</body>
+</html>
